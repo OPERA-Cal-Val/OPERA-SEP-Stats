@@ -29,6 +29,14 @@ The workflow ingests ESDIS (Earth Science Data and Information System) metrics s
    conda activate OPERA-SEP-Stats
    ```
 
+3. **Set the environment paths:**
+   ```bash
+   # set paths to prerequisite tools
+   export PATH="${PYTHONPATH}:/u/data-drive/username/OPERA-SEP-Stats"
+   export PYTHONPATH="${PYTHONPATH}:/u/data-drive/username/OPERA-SEP-Stats"
+   cd ../
+   ```
+
 ## Usage
 The primary entry point is the `run_esdis_stats.py` wrapper script.
 
