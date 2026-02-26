@@ -12,7 +12,6 @@ The workflow ingests ESDIS (Earth Science Data and Information System) metrics s
 - **Automated Aggregation**: Merges historical cumulative data with new monthly reports.
 - **Geospatial Visualization**: Generates global maps showing active user distribution, correcting for political name variants (e.g., merging "Puerto Rico" into "United States").
 - **Statistical Reporting**: Produces breakdown pie charts (Top 10, 15, 20 countries) and calculates global adoption ratios (e.g., "166 out of 195 countries").
-- **Smart Formatting**: Handles map resolution limitations (e.g., listing microstates like Singapore or Tuvalu in footers even if not visible on low-res maps).
 - **PDF Generation**: Compiles all visual assets into a single, executive-ready PDF report.
 
 ## Installation
@@ -41,15 +40,15 @@ The workflow ingests ESDIS (Earth Science Data and Information System) metrics s
 The primary entry point is the `run_esdis_stats.py` wrapper script.
 
 ### Basic Run
-By default, the script looks for Excel files in `input_spreadsheets/` and outputs results to `stats_output/` for the years 2023–2025.
+By default, the script looks for Excel files in `input_spreadsheets/` folder in your cloned repo and outputs results to `stats_output/` for the years 2023–2025.
    ```bash
-   python run_esdis_stats.py
+   run_esdis_stats.py
    ```
 
 ### Custom Run
 You can specify custom input/output directories and analysis year ranges:
    ```bash
-   python run_esdis_stats.py \
+   run_esdis_stats.py \
     --input_dir /path/to/my_data \
     --output_dir /path/to/results \
     --start_year 2024 \
