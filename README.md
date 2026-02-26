@@ -15,20 +15,40 @@ The workflow ingests ESDIS (Earth Science Data and Information System) metrics s
 - **PDF Generation**: Compiles all visual assets into a single, executive-ready PDF report.
 
 ## Installation
+* Note, copy/replace '/u/data-drive/username/' with your own preferred installation path.
 
-1. **Clone the repository:**
+1. **Install conda:**
+   We recommend using the Miniforge conda environment manager, which uses conda-forge as its default code repo:
    ```bash
-   git clone [https://github.com/OPERA-Cal-Val/OPERA-SEP-Stats.git](https://github.com/OPERA-Cal-Val/OPERA-SEP-Stats.git)
+   # assume user is working in Linux env
+   # if not, replace `Miniforge3-Linux-x86_64.sh` below with:
+   # - Mac: `Miniforge3-MacOSX-x86_64.sh` or `Miniforge3-MacOSX-arm64.sh`
+   # - Windows: `Windows-x86_64.exe`
+   
+   wget https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh
+   bash Miniforge3-Linux-x86_64.sh -b -p miniforge
+   miniforge/bin/mamba init bash
+   conda activate base
+   ```
+
+   Rerun bash to refresh your environment:
+   ```bash
+   bash
+   ```
+
+3. **Clone the repository:**
+   ```bash
+   git clone https://github.com/OPERA-Cal-Val/OPERA-SEP-Stats.git
    cd OPERA-SEP-Stats
    ```
 
-2. **Create the environment:**
+4. **Create the environment:**
    ```bash
-   conda env create -f environment.yml
+   mamba env create -f environment.yml
    conda activate OPERA-SEP-Stats
    ```
 
-3. **Set the environment paths:**
+5. **Set the environment paths:**
    ```bash
    # set paths to prerequisite tools
    export PATH="${PYTHONPATH}:/u/data-drive/username/OPERA-SEP-Stats"
