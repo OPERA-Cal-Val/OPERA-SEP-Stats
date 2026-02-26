@@ -20,6 +20,11 @@ import sys
 from pathlib import Path
 from esdis_analytics import CountryUserAnalyzer
 
+# Resolve the absolute path of the directory containing this script.
+# This ensures it always finds the repo's internal folders, 
+# even if run from a different working directory via PATH.
+SCRIPT_DIR = Path(__file__).resolve().parent
+DEFAULT_INPUT_DIR = SCRIPT_DIR / "input_spreadsheets"
 
 def main():
     """Main execution function."""
@@ -30,8 +35,8 @@ def main():
     parser.add_argument(
         "--input_dir",
         type=str,
-        default="input_spreadsheets",
-        help="Directory containing source Excel files"
+        default=str(DEFAULT_INPUT_DIR),
+        help=f"Directory containing source Excel files (default: {DEFAULT_INPUT_DIR})"
     )
 
     parser.add_argument(
@@ -92,3 +97,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

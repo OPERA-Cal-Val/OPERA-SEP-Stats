@@ -505,11 +505,13 @@ class CountryUserAnalyzer:
         # Parse Data Columns
         try:
             header_row = 5
-            headers = df_raw.iloc[header_row].astype(str).tolist()
-            c_idx = [i for i, h in enumerate(headers) if "Country" in h][-1]
+            headers = df_raw.iloc[header_row].tolist()
+            
+            # Using str(h) fixes 'float' object errors caused by NaN cells
+            c_idx = [i for i, h in enumerate(headers) if "Country" in str(h)][-1]
             sub_h = headers[c_idx:]
             u_rel_idx = next(
-                i for i, h in enumerate(sub_h) if "# of Users" in h
+                i for i, h in enumerate(sub_h) if "# of Users" in str(h)
             )
             u_idx = c_idx + u_rel_idx
 
@@ -790,15 +792,14 @@ class CountryUserAnalyzer:
                 if clean and clean != "Antarctica": 
                     world_names_set.add(clean)
         
-        # 2b. Add Active Data Countries (Cleaned) - ensures we don't miss any
-        # valid countries that are in our data but somehow not in the map
+        # 2b. Add Active Data Countries (Cleaned)
         data_names = df_iso.index.unique().tolist()
         for name in data_names:
             clean = clean_country_name(name)
             if clean and clean != "Antarctica":
                 world_names_set.add(clean)
                 
-        # 2c. Force-Add Microstates (Cleaned) - ensures Tuvalu etc. are counted
+        # 2c. Force-Add Microstates (Cleaned)
         for ms in MICROSTATES_TO_INCLUDE:
             clean = clean_country_name(ms)
             if clean and clean != "Antarctica":
@@ -860,3 +861,4 @@ class CountryUserAnalyzer:
         filename = f"{_sanitize_filename(fname_str)}.png"
         fig.savefig(out_dir / filename, bbox_inches='tight', dpi=300)
         return fig
+
