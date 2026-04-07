@@ -121,3 +121,9 @@ We plan to expand the tool to support, feel free to issue tickets for requests:
 
 ## License
 Copyright (c) 2026, by the California Institute of Technology. ALL RIGHTS RESERVED. United States Government Sponsorship acknowledged.
+
+## Funding Statement
+The research was carried out at the Jet Propulsion Laboratory, California Institute of Technology, under a contract with the National Aeronautics and Space Administration (80NM0018D0004).
+
+## Contributors
+[Simran S. Sangha](https://github.com/sssangha/): Jet Propulsion Laboratory, California Institute of Technology
