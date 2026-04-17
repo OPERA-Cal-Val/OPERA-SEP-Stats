@@ -18,13 +18,13 @@ Usage:
 import argparse
 import sys
 from pathlib import Path
-from esdis_analytics import CountryUserAnalyzer
 
-# Resolve the absolute path of the directory containing this script.
-# This ensures it always finds the repo's internal folders, 
-# even if run from a different working directory via PATH.
+from esdis_analytics import CountryUserAnalyzer, SummaryMetricsAnalyzer
+
+# Dynamically resolve the absolute path to the repository directory
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_INPUT_DIR = SCRIPT_DIR / "input_spreadsheets"
+
 
 def main():
     """Main execution function."""
@@ -36,7 +36,10 @@ def main():
         "--input_dir",
         type=str,
         default=str(DEFAULT_INPUT_DIR),
-        help=f"Directory containing source Excel files (default: {DEFAULT_INPUT_DIR})"
+        help=(
+            f"Directory containing source Excel files "
+            f"(default: {DEFAULT_INPUT_DIR})"
+        )
     )
 
     parser.add_argument(
@@ -73,24 +76,31 @@ def main():
     print(f"Output: {args.output_dir}")
     print(f"Range: {args.start_year} to {args.end_year}")
 
-    analyzer = CountryUserAnalyzer(args.input_dir, args.output_dir)
+    # 1. Generate Overall Summary Metrics
+    summary_analyzer = SummaryMetricsAnalyzer(args.input_dir, args.output_dir)
+    fig_summary = summary_analyzer.generate_summary_plots(
+        args.start_year, args.end_year
+    )
 
-    # 1. Process Data
-    df_results = analyzer.process_data(args.start_year, args.end_year)
+    # 2. Process Country Data
+    country_analyzer = CountryUserAnalyzer(args.input_dir, args.output_dir)
+    df_results = country_analyzer.process_data(args.start_year, args.end_year)
 
     if df_results.empty:
         print("No data found or processed. Exiting.")
         sys.exit(0)
 
-    # 2. Save Main Spreadsheet
+    # 3. Save Main Spreadsheet
     out_path = Path(args.output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
     excel_path = out_path / "OPERA_User_Distribution_Summary_Updated.xlsx"
     df_results.to_excel(excel_path)
     print(f"Spreadsheet saved: {excel_path}")
 
-    # 3. Generate Visuals & PDF
-    analyzer.generate_outputs(df_results, args.start_year, args.end_year)
+    # 4. Generate Visuals & PDF (passing the summary figure)
+    country_analyzer.generate_outputs(
+        df_results, args.start_year, args.end_year, summary_fig=fig_summary
+    )
 
     print("--- Analysis Complete ---")
 

@@ -70,8 +70,6 @@ _TWEMOJI_BASE_URL = (
 )
 
 # Hardcoded list of microstates often missing from low-res maps
-# We force-add these to the "World" set to ensure they are reported
-# as missing if they have no data.
 MICROSTATES_TO_INCLUDE = [
     'Vatican City', 'Tuvalu', 'Nauru', 'Palau', 'San Marino',
     'Liechtenstein', 'Monaco', 'Marshall Islands', 'Saint Kitts and Nevis',
@@ -328,6 +326,162 @@ def _add_color_flag_legend(ax, entries, prop, loc_anchor):
 
 
 # ==========================================
+# ANALYZER CLASS (SUMMARY METRICS)
+# ==========================================
+
+class SummaryMetricsAnalyzer:
+    """
+    Analyzes overall mission metrics (Volume, Files, Users) independent
+    of geospatial or country-level distributions.
+    """
+
+    def __init__(self, input_dir, output_dir):
+        self.input_dir = Path(input_dir)
+        self.output_dir = Path(output_dir)
+
+    def generate_summary_plots(self, start_year, end_year):
+        """Generates quarterly summary bar charts from the latest file."""
+        print("Generating summary quarterly plots...")
+
+        # 1. Identify the most recent file based on filename dates
+        files = list(self.input_dir.glob("OPERA_dist_*.xlsx"))
+        latest_file = None
+        latest_date = datetime.min
+
+        for f in files:
+            # --- DUMMY PROOFING ---
+            if "September_2025" in f.name:
+                continue
+                
+            match = re.search(r'OPERA_dist_([A-Za-z]+)_(\d{4})\.xlsx', f.name)
+            if match:
+                dt = datetime.strptime(
+                    f"{match.group(1)} {match.group(2)}", "%B %Y"
+                )
+                if dt > latest_date:
+                    latest_date = dt
+                    latest_file = f
+
+        if not latest_file:
+            print("No valid monthly files found for summary plots. "
+                  "(Legacy files are ignored).")
+            return None
+
+        # 2. Parse the 'Summary-Total' tab
+        try:
+            df_raw = pd.read_excel(
+                latest_file, sheet_name='Summary-Total', header=None,
+                engine='openpyxl'
+            )
+        except Exception as e:  # pylint: disable=broad-except
+            print(f"Failed to read 'Summary-Total': {e}")
+            return None
+
+        # 3. Robustly find the 'Date' column index (Column H / index 7)
+        header_idx = None
+        date_col_idx = None
+        
+        for i, row in df_raw.iterrows():
+            # Lowercase for safe matching
+            row_strs = [str(val).strip().lower() for val in row.values]
+            if "date" in row_strs:
+                header_idx = i
+                date_col_idx = row_strs.index("date")
+                break
+
+        if header_idx is None or date_col_idx is None:
+            print("Could not find a 'Date' header in 'Summary-Total'.")
+            return None
+
+        # Safely extract column indices relative to where 'Date' was found
+        # (This bypasses issues where 'Vol GB' vs 'Vol Gb' capitalization varies)
+        col_indices = [
+            date_col_idx,      # H: Date
+            date_col_idx + 1,  # I: Vol Gb
+            date_col_idx + 2,  # J: #Files
+            date_col_idx + 3   # K: #Users
+        ]
+        
+        if max(col_indices) >= len(df_raw.columns):
+            print("Spreadsheet missing expected columns after 'Date'.")
+            return None
+
+        # Extract data and assign standardized internal names
+        df_summary = df_raw.iloc[header_idx + 1:, col_indices].copy()
+        df_summary.columns = ['Date', 'Vol Gb', '#Files', '#Users']
+
+        df_summary['Date'] = pd.to_datetime(
+            df_summary['Date'], errors='coerce'
+        )
+        df_summary = df_summary.dropna(subset=['Date'])
+
+        # 4. Filter by date range
+        df_summary = df_summary[
+            (df_summary['Date'].dt.year >= start_year) &
+            (df_summary['Date'].dt.year <= end_year)
+        ]
+
+        if df_summary.empty:
+            print("No summary data found for the specified date range.")
+            return None
+
+        for col in ['Vol Gb', '#Files', '#Users']:
+            df_summary[col] = pd.to_numeric(
+                df_summary[col], errors='coerce'
+            ).fillna(0)
+
+        # 5. Group by Quarter
+        df_summary['Quarter'] = df_summary['Date'].dt.to_period('Q')
+        df_q = df_summary.groupby('Quarter')[
+            ['Vol Gb', '#Files', '#Users']
+        ].sum()
+
+        # 6. Plot
+        fig, axes = plt.subplots(1, 3, figsize=FIG_SIZE_STD)
+
+        def _plot_bar(ax, data, title, ylabel, color):
+            if not data.empty:
+                data.index = data.index.astype(str)
+                data.plot(
+                    kind='bar', ax=ax, color=color, edgecolor='black'
+                )
+            ax.set_title(title, fontsize=16)
+            ax.set_ylabel(ylabel, fontsize=12)
+            ax.set_xlabel('Quarter', fontsize=12)
+            ax.tick_params(axis='x', rotation=45)
+            ax.grid(axis='y', linestyle='--', alpha=0.7)
+
+        if 'Vol Gb' in df_q.columns:
+            _plot_bar(
+                axes[0], df_q['Vol Gb'], 'Volume (GB)', 'Vol Gb', '#4C72B0'
+            )
+        if '#Files' in df_q.columns:
+            _plot_bar(
+                axes[1], df_q['#Files'], '# Files', 'Count', '#55A868'
+            )
+        if '#Users' in df_q.columns:
+            _plot_bar(
+                axes[2], df_q['#Users'], '# Users', 'Count', '#C44E52'
+            )
+
+        plt.suptitle(
+            f"OPERA Quarterly Summary ({start_year}-{end_year})",
+            fontsize=PLOT_TITLE_SIZE, fontweight='bold'
+        )
+
+        plt.subplots_adjust(
+            left=0.05, right=0.95, top=0.85, bottom=0.15, wspace=0.25
+        )
+
+        # Save stand-alone PNG
+        fname = f"Summary_Quarterly_{start_year}_{end_year}.png"
+        out_path = self.output_dir / _sanitize_filename(fname)
+        fig.savefig(out_path, bbox_inches='tight', dpi=300)
+
+        return fig
+
+
+# ==========================================
 # ANALYZER CLASS (COUNTRY)
 # ==========================================
 
@@ -506,9 +660,11 @@ class CountryUserAnalyzer:
         try:
             header_row = 5
             headers = df_raw.iloc[header_row].tolist()
-            
+
             # Using str(h) fixes 'float' object errors caused by NaN cells
-            c_idx = [i for i, h in enumerate(headers) if "Country" in str(h)][-1]
+            c_idx = [
+                i for i, h in enumerate(headers) if "Country" in str(h)
+            ][-1]
             sub_h = headers[c_idx:]
             u_rel_idx = next(
                 i for i, h in enumerate(sub_h) if "# of Users" in str(h)
@@ -527,7 +683,7 @@ class CountryUserAnalyzer:
         except (ValueError, IndexError):
             return None, None
 
-    def generate_outputs(self, df, start_year, end_year):
+    def generate_outputs(self, df, start_year, end_year, summary_fig=None):
         """Generates folders, plots, and unified PDF."""
         # Setup categories with updated titles for cumulative
         categories = [(
@@ -560,6 +716,11 @@ class CountryUserAnalyzer:
             )
             pdf.savefig(first_page)
             plt.close()
+
+            # Insert overall Summary Plots immediately after title
+            if summary_fig is not None:
+                pdf.savefig(summary_fig, dpi=200)
+                plt.close(summary_fig)
 
             # Iterate Categories
             for col, label in categories:
@@ -765,19 +926,14 @@ class CountryUserAnalyzer:
         # --- STATS CALCULATION (ROBUST TO TERRITORIES & ISLANDS) ---
         
         # 1. Numerator: Active, unique countries from DATA
-        # Uses 'df_iso' which has already been cleaned/grouped.
-        # This counts "USA" once, even if input had "USA" and "Puerto Rico".
         active_isos = df_iso[df_iso[column] > 0]['iso3'].unique()
         active_isos = {i for i in active_isos if i is not None}
         total_active_in_df = len(active_isos)
 
         # 2. Denominator: "Total World" Definition
-        # Start with all ISOs from the map (handles 95% of countries)
         world_isos = set(world[iso_col].unique())
         world_isos = {i for i in world_isos if str(i) != '-99'}
         
-        # Convert map ISOs to Clean Names to resolve territories (GRL -> Denmark)
-        # We assume if the name cleans to something else, it's a territory.
         logging.getLogger('country_converter').setLevel(logging.ERROR)
         
         world_names_set = set()
