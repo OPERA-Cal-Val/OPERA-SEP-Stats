@@ -713,8 +713,10 @@ class CountryUserAnalyzer:
         except (ValueError, IndexError):
             return None, None
 
-    def generate_outputs(self, df, start_year, end_year, summary_fig=None,
-                         discipline_fig=None, product_fig=None):
+    def generate_outputs(
+        self, df, start_year, end_year, summary_fig=None,
+        discipline_fig=None, product_fig=None, affiliation_fig=None
+    ):
         """Generates folders, plots, and unified PDF."""
         # Setup categories with updated titles for cumulative
         categories = [(
@@ -737,7 +739,7 @@ class CountryUserAnalyzer:
 
         with PdfPages(pdf_path) as pdf:
 
-            # Title Page - Standardized Size
+            # Title Page
             first_page = plt.figure(figsize=FIG_SIZE_STD)
             first_page.clf()
             first_page.text(
@@ -748,17 +750,20 @@ class CountryUserAnalyzer:
             pdf.savefig(first_page)
             plt.close()
 
-            # Insert overall Summary Plots immediately after title
+            # Insert Figures
             if summary_fig is not None:
                 pdf.savefig(summary_fig, dpi=200)
                 plt.close(summary_fig)
 
-            # Insert Product Cumulative Chart
             if product_fig is not None:
                 pdf.savefig(product_fig, dpi=200)
                 plt.close(product_fig)
 
-            # Insert Discipline Pie Chart
+            # Insert Affiliation Bar Chart
+            if affiliation_fig is not None:
+                pdf.savefig(affiliation_fig, dpi=200)
+                plt.close(affiliation_fig)
+
             if discipline_fig is not None:
                 pdf.savefig(discipline_fig, dpi=200)
                 plt.close(discipline_fig)
@@ -1542,5 +1547,311 @@ class ProductAnalyzer:
         out_path = self.output_dir / "Product_Cumulative_Users_BarChart.png"
         fig.savefig(out_path, bbox_inches='tight', dpi=300)
 
+        return fig
+
+# ==========================================
+# ANALYZER CLASS (AFFILIATION / STAKEHOLDER)
+# ==========================================
+
+class AffiliationAnalyzer:
+    """
+    Analyzes cumulative user distribution across affiliation groups 
+    (Stakeholders) over time.
+    """
+
+    def __init__(self, input_dir, output_dir):
+        self.input_dir = Path(input_dir)
+        self.output_dir = Path(output_dir)
+        
+        self.affiliation_mapping = {
+            'GOV': 'Federal',
+            'COM': 'Private sector',
+            'EDU': 'Academia',
+            'ORG': 'Non-profit'
+        }
+        
+        self.colors = {
+            'Federal': '#1a9fd2',        
+            'Private sector': '#206622', 
+            'Academia': '#e06b26',       
+            'Non-profit': '#1a6080'      
+        }
+
+    def process_data(self, start_year, end_year):
+        """Extracts and maps Affiliation user data from raw spreadsheets."""
+        print("Parsing Affiliation data...")
+        monthly_totals = {}
+
+        hist_files = list(self.input_dir.glob("*September_2025.xlsx"))
+        hist_file = hist_files[0] if hist_files else None
+        
+        monthly_files = [
+            f for f in self.input_dir.glob("OPERA_dist_*.xlsx") 
+            if not hist_file or f.name != hist_file.name
+        ]
+
+        # 1. Process Historical Data
+        if hist_file:
+            try:
+                xls = pd.ExcelFile(hist_file, engine='openpyxl')
+                target_sheet = next(
+                    (s for s in xls.sheet_names 
+                     if 'UA' in s.upper() or 'AFFIL' in s.upper()), 
+                    None
+                )
+                
+                if target_sheet:
+                    df_raw = pd.read_excel(
+                        xls, sheet_name=target_sheet, header=None
+                    )
+                    
+                    start_mask = df_raw.apply(
+                        lambda row: row.astype(str).str.contains(
+                            'User Affiliation by Number of Users', 
+                            case=False, na=False
+                        ).any(),
+                        axis=1
+                    )
+                    
+                    if start_mask.any():
+                        row_idx = start_mask.idxmax()
+                        col_mask = df_raw.iloc[row_idx].astype(str).str.contains(
+                            'User Affiliation by Number of Users', 
+                            case=False, na=False
+                        )
+                        start_col = col_mask.idxmax()
+                        
+                        df_sub = df_raw.iloc[
+                            row_idx + 2:, start_col:start_col+12
+                        ].copy()
+                        df_sub.columns = df_sub.iloc[0].astype(str).values
+                        df_sub = df_sub.iloc[1:]
+                        
+                        date_col = next(
+                            (c for c in df_sub.columns 
+                             if 'DATE' in c.upper() or 'MONTH' in c.upper()), 
+                            None
+                        )
+                        
+                        if date_col:
+                            df_sub['DATE_COL'] = pd.to_datetime(
+                                df_sub[date_col], errors='coerce'
+                            )
+                            df_sub = df_sub.dropna(subset=['DATE_COL'])
+                            
+                            for _, row in df_sub.iterrows():
+                                dt_str = row['DATE_COL'].strftime("%Y-%m")
+                                if dt_str not in monthly_totals:
+                                    monthly_totals[dt_str] = {
+                                        'Non-profit': 0, 'Academia': 0, 
+                                        'Private sector': 0, 'Federal': 0
+                                    }
+                                    
+                                for raw_key, clean in self.affiliation_mapping.items():
+                                    # Target index dynamically to prevent Series duplicate bugs
+                                    col_idx = next(
+                                        (i for i, c in enumerate(df_sub.columns) 
+                                         if raw_key in str(c).upper()), 
+                                        None
+                                    )
+                                    if col_idx is not None:
+                                        val = pd.to_numeric(
+                                            row.iloc[col_idx], errors='coerce'
+                                        )
+                                        if not pd.isna(val):
+                                            monthly_totals[dt_str][clean] += val
+            except Exception as e:
+                print(f"Failed to process historical affiliation data: {e}")
+
+        # 2. Process Monthly Data
+        for f in monthly_files:
+            try:
+                match_file = re.search(r'dist_([A-Za-z]+)_(\d{4})', f.name)
+                if match_file:
+                    dt = datetime.strptime(
+                        f"{match_file.group(1)} {match_file.group(2)}", "%B %Y"
+                    )
+                    date_label = dt.strftime("%Y-%m")
+                    
+                    # Dynamically look for the Affiliation/UA sheet in monthly files
+                    xls = pd.ExcelFile(f, engine='openpyxl')
+                    target_sheet = next(
+                        (s for s in xls.sheet_names 
+                         if 'UA' in s.upper() or 'AFFIL' in s.upper()), 
+                        None
+                    )
+                    
+                    if target_sheet is None:
+                        continue
+                        
+                    df_raw = pd.read_excel(
+                        xls, sheet_name=target_sheet, header=None
+                    )
+                    header_row = 5
+                    headers = df_raw.iloc[header_row].tolist()
+                    
+                    c_idx = next(
+                        (i for i, h in enumerate(headers) 
+                         if "Affiliation" in str(h) or "Stakeholder" in str(h)), 
+                        None
+                    )
+                    if c_idx is not None:
+                        sub_h = headers[c_idx:]
+                        u_rel_idx = next(
+                            (i for i, h in enumerate(sub_h) 
+                             if "# of Users" in str(h)), 
+                            None
+                        )
+                        if u_rel_idx is not None:
+                            u_idx = c_idx + u_rel_idx
+                            df_m = df_raw.iloc[
+                                header_row + 1:, [c_idx, u_idx]
+                            ].copy()
+                            df_m.columns = ["Affiliation", "Users"]
+                            
+                            gt_idx = df_m[
+                                df_m['Affiliation'].astype(str).str.contains(
+                                    "Grand Total", case=False, na=False
+                                )
+                            ].index
+                            if len(gt_idx) > 0:
+                                df_m = df_m.loc[:gt_idx[0] - 1]
+                                
+                            df_m = df_m.dropna(subset=['Affiliation'])
+                            df_m['Users'] = pd.to_numeric(
+                                df_m['Users'], errors='coerce'
+                            ).fillna(0)
+                            
+                            if date_label not in monthly_totals:
+                                monthly_totals[date_label] = {
+                                    'Non-profit': 0, 'Academia': 0, 
+                                    'Private sector': 0, 'Federal': 0
+                                }
+                                
+                            for _, row in df_m.iterrows():
+                                aff_str = str(row['Affiliation']).upper()
+                                for r_key, c_key in self.affiliation_mapping.items():
+                                    if r_key in aff_str:
+                                        monthly_totals[date_label][c_key] += row['Users']
+            except Exception as e:
+                print(f"Failed to process monthly file {f.name}: {e}")
+
+        # 3. Aggregate & Accumulate by Year
+        if not monthly_totals:
+            return pd.DataFrame()
+            
+        df_time = pd.DataFrame.from_dict(
+            monthly_totals, orient='index'
+        ).reset_index()
+        df_time = df_time.rename(columns={'index': 'Date'})
+        df_time['Date'] = pd.to_datetime(df_time['Date'])
+        
+        df_time = df_time[
+            (df_time['Date'].dt.year >= start_year) & 
+            (df_time['Date'].dt.year <= end_year)
+        ]
+        df_time['Year'] = df_time['Date'].dt.year
+        
+        df_yearly = df_time.groupby('Year')[
+            ['Federal', 'Private sector', 'Academia', 'Non-profit']
+        ].sum().reset_index()
+        
+        # Apply cumulative sums
+        for col in ['Federal', 'Private sector', 'Academia', 'Non-profit']:
+            df_yearly[col] = df_yearly[col].cumsum()
+            
+        return df_yearly
+
+    def generate_outputs(self, df_yearly, start_year, end_year):
+        """Generates the cumulative affiliation bar chart."""
+        if df_yearly.empty:
+            return None
+
+        print("Generating Cumulative User Affiliation bar chart...")
+        
+        categories = ['Federal', 'Private sector', 'Academia', 'Non-profit']
+        fig, ax = plt.subplots(figsize=(14, 8))
+        
+        years = df_yearly['Year'].astype(str).tolist()
+        x_indices = np.arange(len(years))
+        bottom = np.zeros(len(years))
+        
+        bar_width = 0.45
+        bars_dict = {}
+        
+        for cat in categories:
+            values = df_yearly[cat].values
+            color = self.colors[cat]
+            bars = ax.bar(
+                x_indices, values, bottom=bottom, width=bar_width, 
+                color=color, zorder=3
+            )
+            bars_dict[cat] = bars
+            bottom += values
+            
+        for spine in ['top', 'right', 'left', 'bottom']:
+            ax.spines[spine].set_visible(False)
+            
+        ax.tick_params(axis='both', length=0, labelsize=14)
+        
+        ax.set_xticks(x_indices)
+        ax.set_xticklabels(years, fontweight='bold', fontsize=16)
+        
+        ax.get_yaxis().set_major_formatter(
+            plt.FuncFormatter(lambda val, loc: "{:,}".format(int(val)))
+        )
+        
+        last_idx = len(years) - 1
+        last_x = x_indices[last_idx]
+        
+        # Generate custom bounded gridlines so they don't cross into the legend
+        fig.canvas.draw()
+        y_ticks = ax.get_yticks()
+        max_y = bottom.max()
+        for y in y_ticks:
+            if 0 < y <= max_y + (max_y * 0.1):
+                ax.plot(
+                    [-0.5, last_x + (bar_width / 2)], [y, y], 
+                    color='#e0e0e0', linestyle='-', linewidth=1, zorder=0
+                )
+        
+        # Custom legend elements mapped to the final right-hand bar
+        for cat in categories:
+            bar = bars_dict[cat][last_idx]
+            y_center = bar.get_y() + bar.get_height() / 2
+            bar_right_edge = last_x + (bar_width / 2)
+            
+            ax.annotate(
+                "",
+                xy=(bar_right_edge + 0.1, y_center),
+                xytext=(bar_right_edge + 0.6, y_center),
+                arrowprops=dict(arrowstyle="->", color="black", lw=1.2)
+            )
+            
+            ax.plot(
+                bar_right_edge + 0.75, y_center, marker='s', 
+                markersize=26, color=self.colors[cat], clip_on=False
+            )
+            
+            ax.text(
+                bar_right_edge + 0.9, y_center, cat,
+                va='center', ha='left',
+                fontsize=20, fontweight='bold', color=self.colors[cat]
+            )
+
+        ax.set_xlim(-0.5, len(years) + 1.8)
+
+        plt.figtext(
+            0.5, 0.01, 
+            "Cumulative growth in stakeholder groups across OPERA products",
+            ha="center", va="bottom",
+            fontsize=24, fontweight='bold', color='black'
+        )
+        
+        plt.subplots_adjust(bottom=0.12)
+
+        out_path = self.output_dir / "Affiliation_Cumulative_Users_BarChart.png"
+        fig.savefig(out_path, bbox_inches='tight', dpi=300)
+        
         return fig
 

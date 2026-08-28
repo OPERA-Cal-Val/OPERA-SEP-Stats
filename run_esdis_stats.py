@@ -24,7 +24,8 @@ from esdis_analytics import (
     CountryUserAnalyzer, 
     SummaryMetricsAnalyzer, 
     DisciplineAnalyzer,
-    ProductAnalyzer
+    ProductAnalyzer,
+    AffiliationAnalyzer
 )
 
 # Dynamically resolve the absolute path to the repository directory
@@ -112,6 +113,16 @@ def main():
             df_product, args.start_year, args.end_year
         )
 
+    # Process Affiliation Data
+    affiliation_analyzer = AffiliationAnalyzer(args.input_dir, args.output_dir)
+    df_affiliation = affiliation_analyzer.process_data(args.start_year, args.end_year)
+    
+    fig_affiliation = None
+    if not df_affiliation.empty:
+        fig_affiliation = affiliation_analyzer.generate_outputs(
+            df_affiliation, args.start_year, args.end_year
+        )
+
     # 3. Process Country Data
     country_analyzer = CountryUserAnalyzer(args.input_dir, args.output_dir)
     df_results = country_analyzer.process_data(args.start_year, args.end_year)
@@ -130,9 +141,13 @@ def main():
             df_disc_out.columns = ['Discipline', 'Total Users']
             df_disc_out.to_excel(writer, sheet_name='Discipline_Distribution', index=False)
             
-        # NEW: Save Product Distribution
+        # Save Product Distribution
         if not df_product.empty:
             df_product.to_excel(writer, sheet_name='Product_Distribution', index=False)
+
+        # Save Affiliation Distribution
+        if not df_affiliation.empty:
+            df_affiliation.to_excel(writer, sheet_name='Affiliation_Distribution', index=False)
             
     print(f"Spreadsheet saved with tracking tabs: {excel_path}")
 
