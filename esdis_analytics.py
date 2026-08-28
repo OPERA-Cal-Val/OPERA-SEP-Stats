@@ -38,6 +38,7 @@ import geopandas as gpd
 import matplotlib.colors as mcolors
 import matplotlib.image as mpimg
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 from matplotlib import font_manager
 from matplotlib.backends.backend_pdf import PdfPages
@@ -61,6 +62,35 @@ PLOT_LABEL_SIZE = 14
 COLOR_OTHERS = '#D3D3D3'  # Gray color strictly for "Others"
 # Standardize figure size for consistent PDF pages (Width, Height)
 FIG_SIZE_STD = (16, 9)
+
+# Define disciplines
+DISCIPLINE_MAPPING = {
+    'Land use Land change': [
+        'Land Processes', 
+        'Human Dimensions of Global Change'
+    ],
+    'Solid Earth': [
+        'Geophysics'
+    ],
+    'Hydrology': [
+        'Hydrologic Cycle'
+    ],
+    'Atmo Sci': [
+        'Atmospheric Aerosols', 'Atmospheric Composition', 'Clouds',
+        'Radiation Budget', 'Tropospheric Chemistry',
+        'Upper Atmosphere Composition', 'Upper Atmosphere Dynamics'
+    ],
+    'Environ Sci': [
+        'Biogeochemical Dynamics', 
+        'Global Biosphere'
+    ],
+    'Cryosphere': [
+        'Cryospheric Studies', 'Sea Ice', 'Polar Processes'
+    ],
+    'Oceanography': [
+        'Air Sea Interaction', 'Physical Oceanography', 'Biological Oceanography'
+    ]
+}
 
 # Mapping for flag images
 _TWEMOJI_VERSION = "14.0.2"
@@ -431,7 +461,7 @@ class SummaryMetricsAnalyzer:
             ).fillna(0)
 
         # 5. Group by Quarter
-        df_summary['Quarter'] = df_summary['Date'].dt.to_period('Q')
+        df_summary['Quarter'] = df_summary['Date'].dt.to_period('Q-SEP')
         df_q = df_summary.groupby('Quarter')[
             ['Vol Gb', '#Files', '#Users']
         ].sum()
@@ -683,7 +713,8 @@ class CountryUserAnalyzer:
         except (ValueError, IndexError):
             return None, None
 
-    def generate_outputs(self, df, start_year, end_year, summary_fig=None):
+    def generate_outputs(self, df, start_year, end_year, summary_fig=None,
+                         discipline_fig=None, product_fig=None):
         """Generates folders, plots, and unified PDF."""
         # Setup categories with updated titles for cumulative
         categories = [(
@@ -721,6 +752,16 @@ class CountryUserAnalyzer:
             if summary_fig is not None:
                 pdf.savefig(summary_fig, dpi=200)
                 plt.close(summary_fig)
+
+            # Insert Product Cumulative Chart
+            if product_fig is not None:
+                pdf.savefig(product_fig, dpi=200)
+                plt.close(product_fig)
+
+            # Insert Discipline Pie Chart
+            if discipline_fig is not None:
+                pdf.savefig(discipline_fig, dpi=200)
+                plt.close(discipline_fig)
 
             # Iterate Categories
             for col, label in categories:
@@ -1016,5 +1057,490 @@ class CountryUserAnalyzer:
         fname_str = f"Global_Map_Pins_{label}"
         filename = f"{_sanitize_filename(fname_str)}.png"
         fig.savefig(out_dir / filename, bbox_inches='tight', dpi=300)
+        return fig
+
+# ==========================================
+# ANALYZER CLASS (DISCIPLINE / PSA)
+# ==========================================
+
+class DisciplineAnalyzer:
+    """
+    Analyzes user distribution by Primary Study Area (Discipline).
+    Maps specific DAAC categories to broader scientific disciplines.
+    """
+
+    def __init__(self, input_dir, output_dir):
+        self.input_dir = Path(input_dir)
+        self.output_dir = Path(output_dir)
+
+    def process_data(self, start_year, end_year):
+        """Extracts and maps PSA user data from both historical and monthly spreadsheets."""
+        print("Parsing Discipline (PSA) data...")
+
+        mapped_totals = {key: 0 for key in DISCIPLINE_MAPPING}
+
+        # 1. Identify files
+        hist_files = list(self.input_dir.glob("*September_2025.xlsx"))
+        if not hist_files:
+            print("Warning: Historical baseline file not found for PSA analysis.")
+            hist_file = None
+            monthly_files = list(self.input_dir.glob("OPERA_dist_*.xlsx"))
+        else:
+            hist_file = hist_files[0]
+            monthly_files = [
+                f for f in self.input_dir.glob("OPERA_dist_*.xlsx") 
+                if f.name != hist_file.name
+            ]
+
+        # 2. Process Historical Data
+        if hist_file:
+            try:
+                df_raw = pd.read_excel(
+                    hist_file, sheet_name='Summary - PSA', header=None,
+                    engine='openpyxl'
+                )
+                
+                user_start_mask = df_raw.apply(
+                    lambda row: row.astype(str).str.contains(
+                        'Primary Study Area by Number of Users', na=False
+                    ).any(),
+                    axis=1
+                )
+                
+                if user_start_mask.any():
+                    start_idx = user_start_mask.idxmax()
+                    header_idx = start_idx + 2
+                    headers = df_raw.iloc[header_idx].astype(str).tolist()
+
+                    df_users = df_raw.iloc[header_idx + 1:].copy()
+                    df_users.columns = headers
+
+                    df_users = df_users.rename(columns={'Month-Year': 'Date'})
+                    df_users['Date'] = pd.to_datetime(
+                        df_users['Date'], errors='coerce'
+                    )
+                    df_users = df_users.dropna(subset=['Date'])
+
+                    # Filter historical by date range
+                    df_users = df_users[
+                        (df_users['Date'].dt.year >= start_year) &
+                        (df_users['Date'].dt.year <= end_year)
+                    ]
+
+                    df_users_clean = df_users.drop(
+                        columns=['Date', 'Grand Total', 'nan'], errors='ignore'
+                    )
+                    df_users_clean = df_users_clean.apply(
+                        pd.to_numeric, errors='coerce'
+                    ).fillna(0)
+                    
+                    raw_sums = df_users_clean.sum()
+
+                    # Accumulate into categories
+                    for raw_cat, val in raw_sums.items():
+                        for broad_cat, sub_cats in DISCIPLINE_MAPPING.items():
+                            if str(raw_cat).strip() in sub_cats:
+                                mapped_totals[broad_cat] += val
+                                break
+            except Exception as e:
+                print(f"Failed to process historical PSA data: {e}")
+
+        # 3. Process Monthly Data (October 2025 onwards)
+        for f in monthly_files:
+            # Filter monthly files by date range via filename
+            date_in_range = True
+            try:
+                match_file = re.search(r'dist_([A-Za-z]+)_(\d{4})', f.name)
+                if match_file:
+                    file_year = int(match_file.group(2))
+                    if file_year < start_year or file_year > end_year:
+                        date_in_range = False
+            except ValueError:
+                pass
+                
+            if not date_in_range:
+                continue
+
+            # Parse and accumulate if inside date bounds
+            series_m = self._parse_monthly(f)
+            if series_m is not None and not series_m.empty:
+                for raw_cat, val in series_m.items():
+                    for broad_cat, sub_cats in DISCIPLINE_MAPPING.items():
+                        if str(raw_cat).strip() in sub_cats:
+                            mapped_totals[broad_cat] += val
+                            break
+
+        df_mapped = pd.Series(mapped_totals)
+        return df_mapped[df_mapped > 0].sort_values(ascending=False)
+
+    def _parse_monthly(self, path):
+        """Parses the discipline (PSA) data from a monthly distribution file."""
+        try:
+            df_raw = pd.read_excel(
+                path, sheet_name='Summaries', header=None, engine='openpyxl'
+            )
+        except (FileNotFoundError, ValueError, OSError):
+            return None
+
+        try:
+            header_row = 5
+            headers = df_raw.iloc[header_row].tolist()
+
+            # Locate 'Primary Study Area' block
+            c_idx = [
+                i for i, h in enumerate(headers) if "Primary Study Area" in str(h)
+            ][-1]
+            sub_h = headers[c_idx:]
+            
+            # Find the '# of Users' column relative to the PSA column
+            u_rel_idx = next(
+                (i for i, h in enumerate(sub_h) if "# of Users" in str(h)), None
+            )
+            if u_rel_idx is None:
+                return None
+            
+            u_idx = c_idx + u_rel_idx
+
+            df_m = df_raw.iloc[header_row + 1:, [c_idx, u_idx]].copy()
+            df_m.columns = ["PSA", "Users"]
+            
+            # Stop parsing when we hit the Grand Total block
+            grand_total_idx = df_m[
+                df_m['PSA'].astype(str).str.contains("Grand Total", case=False, na=False)
+            ].index
+            if len(grand_total_idx) > 0:
+                df_m = df_m.loc[:grand_total_idx[0] - 1]
+
+            # Clean and sum up
+            df_m = df_m.dropna(subset=['PSA'])
+            df_m['Users'] = pd.to_numeric(
+                df_m['Users'], errors='coerce'
+            ).fillna(0)
+
+            return df_m.groupby("PSA")['Users'].sum()
+        except (ValueError, IndexError):
+            return None
+
+    def generate_outputs(self, df_series, start_year, end_year):
+        """Generates the aggregate pie chart for disciplines."""
+        if df_series.empty or df_series.sum() == 0:
+            print("No discipline data to plot.")
+            return None
+
+        print("Generating Discipline pie chart...")
+
+        fig, ax = plt.subplots(figsize=(10, 8))
+        total = df_series.sum()
+
+        # Colors matching the manual analysis screenshot
+        colors = [
+            '#1a648b', '#eb7c31', '#216c21', '#17a2c8', 
+            '#a03198', '#549c3b', '#0f3c53'
+        ]
+
+        wedges, _ = ax.pie(
+            df_series,
+            colors=colors[:len(df_series)],
+            startangle=90,          # Start at top
+            counterclock=False,     # Clockwise order
+            wedgeprops={'edgecolor': 'white', 'linewidth': 1.5}
+        )
+
+        # Base style for outside pointer lines
+        kw = dict(arrowprops=dict(arrowstyle="-", color="black"), zorder=0, va="center")
+
+        for i, p in enumerate(wedges):
+            ang = (p.theta2 - p.theta1) / 2. + p.theta1
+            y = np.sin(np.deg2rad(ang))
+            x = np.cos(np.deg2rad(ang))
+            
+            pct = df_series.iloc[i] / total * 100
+            label_name = str(df_series.index[i])
+            
+            if pct >= 10:
+                # INSIDE TEXT (Large Slices)
+                if label_name == "Land use Land change":
+                    label_name = "Land use\nLand change"
+                label_text = f"{label_name}\n({int(round(pct))}%)"
+                
+                ax.text(
+                    x * 0.6, y * 0.6, label_text, 
+                    ha='center', va='center', 
+                    fontsize=14, fontweight='bold', color='white'
+                )
+            else:
+                # OUTSIDE TEXT (Small Slices, Inline text)
+                label_text = f"{label_name} ({int(round(pct))}%)"
+                
+                horizontalalignment = {-1: "right", 1: "left"}[int(np.sign(x))]
+                connectionstyle = f"angle,angleA=0,angleB={ang}"
+                kw["arrowprops"].update({"connectionstyle": connectionstyle})
+                ax.annotate(
+                    label_text, xy=(x, y), xytext=(1.15 * np.sign(x), 1.2 * y),
+                    horizontalalignment=horizontalalignment, **kw,
+                    fontsize=14, fontweight='bold', color='black'
+                )
+
+        ax.set_title("Aggregate of all users", fontsize=24, pad=20)
+
+        # Save to output directory
+        out_path = self.output_dir / "Discipline_Aggregate_PieChart.png"
+        fig.savefig(out_path, bbox_inches='tight', dpi=300)
+        
+        # Return the figure object so the PDF generator can catch it
+        return fig
+
+# ==========================================
+# ANALYZER CLASS (PRODUCT)
+# ==========================================
+
+class ProductAnalyzer:
+    """
+    Analyzes cumulative user distribution across OPERA products over time.
+    """
+
+    def __init__(self, input_dir, output_dir):
+        self.input_dir = Path(input_dir)
+        self.output_dir = Path(output_dir)
+        self.product_mapping = {
+            'CSLC': 'CSLC',
+            'RTC': 'RTC',
+            'DISP': 'DISP',
+            'DIST': 'DIST',
+            'DSWx': 'DSWX'
+        }
+
+    def process_data(self, start_year, end_year):
+        """Extracts and maps Product user data from spreadsheets."""
+        print("Parsing Product data...")
+        monthly_totals = {}
+
+        hist_files = list(self.input_dir.glob("*September_2025.xlsx"))
+        hist_file = hist_files[0] if hist_files else None
+        
+        monthly_files = [
+            f for f in self.input_dir.glob("OPERA_dist_*.xlsx") 
+            if not hist_file or f.name != hist_file.name
+        ]
+
+        # 1. Process Historical Data
+        if hist_file:
+            try:
+                df_raw = pd.read_excel(
+                    hist_file, sheet_name='Sumamry-DAAC_Product', 
+                    header=None, engine='openpyxl'
+                )
+                
+                start_mask = df_raw.apply(
+                    lambda row: row.astype(str).str.contains(
+                        'Provider by Number of Users', case=False, na=False
+                    ).any(),
+                    axis=1
+                )
+                
+                if start_mask.any():
+                    start_idx = start_mask.idxmax()
+                    headers_row = df_raw.iloc[start_idx + 3].values
+                    
+                    mapped_cols = {}
+                    for i, col_name in enumerate(headers_row):
+                        col_str = str(col_name)
+                        if col_str.lower() in ['nan', 'nat', 'none']:
+                            continue
+                            
+                        for key, search_val in self.product_mapping.items():
+                            if str(search_val).upper() in col_str.upper():
+                                if key not in mapped_cols:
+                                    mapped_cols[key] = []
+                                mapped_cols[key].append(i)
+
+                    df_data = df_raw.iloc[start_idx + 6:].copy()
+                    
+                    date_col = next(
+                        (col for col in df_data.columns 
+                         if pd.to_datetime(
+                             df_data[col], errors='coerce'
+                         ).notna().any()), 
+                        None
+                    )
+                    
+                    if date_col is not None:
+                        df_data['Date'] = pd.to_datetime(
+                            df_data[date_col], errors='coerce'
+                        )
+                        df_data = df_data.dropna(subset=['Date'])
+                        
+                        for prod_key, cols in mapped_cols.items():
+                            df_data[prod_key] = df_data[cols].apply(
+                                pd.to_numeric, errors='coerce'
+                            ).fillna(0).sum(axis=1)
+
+                        for _, row in df_data.iterrows():
+                            dt_str = row['Date'].strftime("%Y-%m")
+                            total_users = sum(
+                                row[k] for k in mapped_cols.keys()
+                            )
+                            monthly_totals[dt_str] = (
+                                monthly_totals.get(dt_str, 0) + total_users
+                            )
+
+            except Exception as e:
+                print(f"Failed to process historical product data: {e}")
+
+        # 2. Process Monthly Data (October 2025 onwards)
+        for f in monthly_files:
+            try:
+                match_file = re.search(r'dist_([A-Za-z]+)_(\d{4})', f.name)
+                if match_file:
+                    dt = datetime.strptime(
+                        f"{match_file.group(1)} {match_file.group(2)}", 
+                        "%B %Y"
+                    )
+                    date_label = dt.strftime("%Y-%m")
+                    
+                    # For monthly files, product data is in Sumamry-DAAC_Product
+                    df_raw = pd.read_excel(
+                        f, sheet_name='Sumamry-DAAC_Product', header=None, 
+                        engine='openpyxl'
+                    )
+                    
+                    header_row = 5
+                    headers = df_raw.iloc[header_row].tolist()
+                    
+                    c_idx = next(
+                        (i for i, h in enumerate(headers) 
+                         if "Products" in str(h)), 
+                        None
+                    )
+                    
+                    if c_idx is not None:
+                        sub_h = headers[c_idx:]
+                        u_rel_idx = next(
+                            (i for i, h in enumerate(sub_h) 
+                             if "# of Users" in str(h)), 
+                            None
+                        )
+                        if u_rel_idx is not None:
+                            u_idx = c_idx + u_rel_idx
+                            df_m = df_raw.iloc[
+                                header_row + 1:, [c_idx, u_idx]
+                            ].copy()
+                            df_m.columns = ["Product", "Users"]
+                            
+                            grand_total_idx = df_m[
+                                df_m['Product'].astype(str).str.contains(
+                                    "Grand Total", case=False, na=False
+                                )
+                            ].index
+                            
+                            if len(grand_total_idx) > 0:
+                                df_m = df_m.loc[:grand_total_idx[0] - 1]
+                                
+                            df_m = df_m.dropna(subset=['Product'])
+                            df_m['Users'] = pd.to_numeric(
+                                df_m['Users'], errors='coerce'
+                            ).fillna(0)
+                            
+                            # Map monthly string names to core categories
+                            total_valid_users = 0
+                            for _, row in df_m.iterrows():
+                                prod_str = str(row['Product'])
+                                for search_val in self.product_mapping.values():
+                                    if search_val.upper() in prod_str.upper():
+                                        total_valid_users += row['Users']
+                                        break
+                            
+                            monthly_totals[date_label] = (
+                                monthly_totals.get(date_label, 0) + 
+                                total_valid_users
+                            )
+            except Exception as e:
+                print(f"Failed to process monthly file {f.name}: {e}")
+
+        # 3. Aggregate & Accumulate by Quarter
+        if not monthly_totals:
+            return pd.DataFrame()
+
+        df_time = pd.DataFrame(
+            list(monthly_totals.items()), columns=['Date', 'Users']
+        )
+        df_time['Date'] = pd.to_datetime(df_time['Date'])
+        df_time = df_time.sort_values('Date')
+        
+        df_time = df_time[
+            (df_time['Date'].dt.year >= start_year) & 
+            (df_time['Date'].dt.year <= end_year)
+        ]
+        
+        # NOTE: Maintains your Q-SEP federal fiscal mapping!
+        df_time['Quarter'] = df_time['Date'].dt.to_period('Q-SEP')
+        df_q = df_time.groupby('Quarter')['Users'].sum().reset_index()
+        df_q['Cumulative_Users'] = df_q['Users'].cumsum()
+        
+        return df_q
+
+    def generate_outputs(self, df_q, start_year, end_year):
+        """Generates the cumulative product users bar chart."""
+        if df_q.empty:
+            return None
+
+        print("Generating Cumulative Product Users bar chart...")
+        fig, ax = plt.subplots(figsize=(14, 8))
+
+        x_labels = df_q['Quarter'].astype(str).tolist()
+        clean_labels = []
+        last_year = None
+        for lbl in x_labels:
+            y, q = lbl[:4], lbl[4:]
+            if y != last_year:
+                # Insert a newline between the year and the quarter
+                clean_labels.append(f"{y}\n{q}")
+                last_year = y
+            else:
+                clean_labels.append(q)
+
+        x = np.arange(len(clean_labels))
+        y_vals = df_q['Cumulative_Users'].values
+
+        bars = ax.bar(x, y_vals, width=0.45, color='#1b617d', zorder=3)
+        ax.plot(
+            x, y_vals, linestyle=':', color='#aaaaaa', linewidth=2, zorder=2
+        )
+
+        for bar, val in zip(bars, y_vals):
+            ax.text(
+                bar.get_x() + bar.get_width() / 2,
+                bar.get_height() + (max(y_vals) * 0.02),
+                f"{int(val):,}",
+                ha='center', va='bottom', fontsize=12, 
+                fontweight='bold', color='black'
+            )
+
+        ax.set_xticks(x)
+        # Drop the font size slightly from 16 to 14 to prevent bleeding
+        ax.set_xticklabels(clean_labels, fontsize=14, fontweight='bold')
+        ax.tick_params(axis='y', labelsize=14)
+        ax.get_yaxis().set_major_formatter(
+            plt.FuncFormatter(lambda val, loc: "{:,}".format(int(val)))
+        )
+        
+        ax.grid(
+            axis='y', color='#e0e0e0', linestyle='-', linewidth=1, zorder=0
+        )
+        ax.tick_params(axis='both', length=0)
+        
+        for spine in ['top', 'right', 'left', 'bottom']:
+            ax.spines[spine].set_visible(False)
+        
+        plt.figtext(
+            0.5, 0.01, 
+            "Cumulative number of users across OPERA products", 
+            ha="center", fontsize=24, fontweight='bold'
+        )
+        plt.subplots_adjust(bottom=0.12)
+
+        out_path = self.output_dir / "Product_Cumulative_Users_BarChart.png"
+        fig.savefig(out_path, bbox_inches='tight', dpi=300)
+
         return fig
 

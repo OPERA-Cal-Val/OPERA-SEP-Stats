@@ -12,14 +12,20 @@ Wrapper script to execute country-level user analysis.
 
 Usage:
     python run_esdis_stats.py \
-        --input_dir my_data --start_year 2023 --end_year 2025
+        --input_dir my_data --start_year 2023 --end_year 2026
 """
 
 import argparse
 import sys
 from pathlib import Path
+import pandas as pd
 
-from esdis_analytics import CountryUserAnalyzer, SummaryMetricsAnalyzer
+from esdis_analytics import (
+    CountryUserAnalyzer, 
+    SummaryMetricsAnalyzer, 
+    DisciplineAnalyzer,
+    ProductAnalyzer
+)
 
 # Dynamically resolve the absolute path to the repository directory
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -29,7 +35,7 @@ DEFAULT_INPUT_DIR = SCRIPT_DIR / "input_spreadsheets"
 def main():
     """Main execution function."""
     parser = argparse.ArgumentParser(
-        description="Run ESDIS Country User Statistics Analysis"
+        description="Run ESDIS User Statistics Analysis"
     )
 
     parser.add_argument(
@@ -59,8 +65,8 @@ def main():
     parser.add_argument(
         "--end_year",
         type=int,
-        default=2025,
-        help="Analysis end year (default: 2025)"
+        default=2026,
+        help="Analysis end year (default: 2026)"
     )
 
     args = parser.parse_args()
@@ -86,7 +92,27 @@ def main():
         args.start_year, args.end_year
     )
 
-    # 2. Process Country Data
+    # 2. Process Discipline (PSA) Data & Capture Figure
+    discipline_analyzer = DisciplineAnalyzer(args.input_dir, args.output_dir)
+    df_discipline = discipline_analyzer.process_data(args.start_year, args.end_year)
+    
+    fig_discipline = None
+    if not df_discipline.empty:
+        fig_discipline = discipline_analyzer.generate_outputs(
+            df_discipline, args.start_year, args.end_year
+        )
+
+    # Process Product Data
+    product_analyzer = ProductAnalyzer(args.input_dir, args.output_dir)
+    df_product = product_analyzer.process_data(args.start_year, args.end_year)
+    
+    fig_product = None
+    if not df_product.empty:
+        fig_product = product_analyzer.generate_outputs(
+            df_product, args.start_year, args.end_year
+        )
+
+    # 3. Process Country Data
     country_analyzer = CountryUserAnalyzer(args.input_dir, args.output_dir)
     df_results = country_analyzer.process_data(args.start_year, args.end_year)
 
@@ -94,14 +120,28 @@ def main():
         print("No data found or processed. Exiting.")
         sys.exit(0)
 
-    # 3. Save Main Spreadsheet
+    # 4. Save Main Spreadsheet (Multi-Tab)
     excel_path = out_path / "OPERA_User_Distribution_Summary_Updated.xlsx"
-    df_results.to_excel(excel_path)
-    print(f"Spreadsheet saved: {excel_path}")
+    with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
+        df_results.to_excel(writer, sheet_name='Country_Distribution')
+        
+        if not df_discipline.empty:
+            df_disc_out = df_discipline.reset_index()
+            df_disc_out.columns = ['Discipline', 'Total Users']
+            df_disc_out.to_excel(writer, sheet_name='Discipline_Distribution', index=False)
+            
+        # NEW: Save Product Distribution
+        if not df_product.empty:
+            df_product.to_excel(writer, sheet_name='Product_Distribution', index=False)
+            
+    print(f"Spreadsheet saved with tracking tabs: {excel_path}")
 
-    # 4. Generate Visuals & PDF (passing the summary figure)
+    # 5. Generate Visuals & Compile PDF
     country_analyzer.generate_outputs(
-        df_results, args.start_year, args.end_year, summary_fig=fig_summary
+        df_results, args.start_year, args.end_year, 
+        summary_fig=fig_summary, 
+        discipline_fig=fig_discipline, 
+        product_fig=fig_product # NEW
     )
 
     print("--- Analysis Complete ---")
