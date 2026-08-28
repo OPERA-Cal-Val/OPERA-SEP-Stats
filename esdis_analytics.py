@@ -942,8 +942,18 @@ class ProductAnalyzer:
                 if start_mask.any():
                     start_idx = start_mask.idxmax()
                     
-                    # Forward-fill headers so merged columns inherit correctly
-                    h_vals = df_raw.iloc[start_idx + 3].values
+                    # Dynamically find the Grand Total column boundary
+                    gt_idx = len(df_raw.columns)
+                    for r_offset in [2, 3]:
+                        if start_idx + r_offset < len(df_raw):
+                            for c_i, val in enumerate(df_raw.iloc[start_idx + r_offset].values):
+                                if str(val).strip().lower() == 'grand total':
+                                    if c_i < gt_idx:
+                                        gt_idx = c_i
+                                        break
+                    
+                    # Truncate headers to avoid ffilling into the Grand Total col
+                    h_vals = df_raw.iloc[start_idx + 3].values[:gt_idx]
                     headers_row = pd.Series(h_vals).ffill().values
                     
                     mapped_cols = {}
