@@ -715,7 +715,8 @@ class CountryUserAnalyzer:
 
     def generate_outputs(
         self, df, start_year, end_year, summary_fig=None,
-        discipline_fig=None, product_fig=None, affiliation_fig=None
+        discipline_fig=None, product_fig=None, product_indiv_figs=None, 
+        affiliation_fig=None
     ):
         """Generates folders, plots, and unified PDF."""
         # Setup categories with updated titles for cumulative
@@ -739,7 +740,7 @@ class CountryUserAnalyzer:
 
         with PdfPages(pdf_path) as pdf:
 
-            # Title Page
+            # Title Page 
             first_page = plt.figure(figsize=FIG_SIZE_STD)
             first_page.clf()
             first_page.text(
@@ -759,7 +760,12 @@ class CountryUserAnalyzer:
                 pdf.savefig(product_fig, dpi=200)
                 plt.close(product_fig)
 
-            # Insert Affiliation Bar Chart
+            # NEW: Insert Individual Product Charts
+            if product_indiv_figs:
+                for fig in product_indiv_figs:
+                    pdf.savefig(fig, dpi=200)
+                    plt.close(fig)
+
             if affiliation_fig is not None:
                 pdf.savefig(affiliation_fig, dpi=200)
                 plt.close(affiliation_fig)
@@ -1316,7 +1322,7 @@ class ProductAnalyzer:
         }
 
     def process_data(self, start_year, end_year):
-        """Extracts and maps Product user data from spreadsheets."""
+        """Extracts and maps individual Product user data."""
         print("Parsing Product data...")
         monthly_totals = {}
 
@@ -1382,17 +1388,18 @@ class ProductAnalyzer:
 
                         for _, row in df_data.iterrows():
                             dt_str = row['Date'].strftime("%Y-%m")
-                            total_users = sum(
-                                row[k] for k in mapped_cols.keys()
-                            )
-                            monthly_totals[dt_str] = (
-                                monthly_totals.get(dt_str, 0) + total_users
-                            )
+                            if dt_str not in monthly_totals:
+                                monthly_totals[dt_str] = {
+                                    k: 0 for k in self.product_mapping.keys()
+                                }
+                            for k in self.product_mapping.keys():
+                                if k in df_data.columns:
+                                    monthly_totals[dt_str][k] += row[k]
 
             except Exception as e:
                 print(f"Failed to process historical product data: {e}")
 
-        # 2. Process Monthly Data (October 2025 onwards)
+        # 2. Process Monthly Data
         for f in monthly_files:
             try:
                 match_file = re.search(r'dist_([A-Za-z]+)_(\d{4})', f.name)
@@ -1403,7 +1410,6 @@ class ProductAnalyzer:
                     )
                     date_label = dt.strftime("%Y-%m")
                     
-                    # For monthly files, product data is in Sumamry-DAAC_Product
                     df_raw = pd.read_excel(
                         f, sheet_name='Sumamry-DAAC_Product', header=None, 
                         engine='openpyxl'
@@ -1446,51 +1452,57 @@ class ProductAnalyzer:
                                 df_m['Users'], errors='coerce'
                             ).fillna(0)
                             
-                            # Map monthly string names to core categories
-                            total_valid_users = 0
-                            for _, row in df_m.iterrows():
-                                prod_str = str(row['Product'])
-                                for search_val in self.product_mapping.values():
-                                    if search_val.upper() in prod_str.upper():
-                                        total_valid_users += row['Users']
-                                        break
+                            if date_label not in monthly_totals:
+                                monthly_totals[date_label] = {
+                                    k: 0 for k in self.product_mapping.keys()
+                                }
                             
-                            monthly_totals[date_label] = (
-                                monthly_totals.get(date_label, 0) + 
-                                total_valid_users
-                            )
+                            for _, row in df_m.iterrows():
+                                prod_str = str(row['Product']).upper()
+                                for key, search in self.product_mapping.items():
+                                    if search.upper() in prod_str:
+                                        monthly_totals[date_label][key] += row['Users']
             except Exception as e:
-                print(f"Failed to process monthly file {f.name}: {e}")
+                print(f"Failed to process monthly product file {f.name}: {e}")
 
         # 3. Aggregate & Accumulate by Quarter
         if not monthly_totals:
             return pd.DataFrame()
 
-        df_time = pd.DataFrame(
-            list(monthly_totals.items()), columns=['Date', 'Users']
-        )
+        df_time = pd.DataFrame.from_dict(
+            monthly_totals, orient='index'
+        ).reset_index()
+        df_time = df_time.rename(columns={'index': 'Date'})
         df_time['Date'] = pd.to_datetime(df_time['Date'])
-        df_time = df_time.sort_values('Date')
         
         df_time = df_time[
             (df_time['Date'].dt.year >= start_year) & 
             (df_time['Date'].dt.year <= end_year)
         ]
         
-        # NOTE: Maintains your Q-SEP federal fiscal mapping!
         df_time['Quarter'] = df_time['Date'].dt.to_period('Q-SEP')
-        df_q = df_time.groupby('Quarter')['Users'].sum().reset_index()
-        df_q['Cumulative_Users'] = df_q['Users'].cumsum()
+        df_q = df_time.groupby('Quarter')[
+            list(self.product_mapping.keys())
+        ].sum().reset_index()
+        
+        # Calculate Total sum and cumulative fields
+        df_q['Total_Users'] = df_q[list(self.product_mapping.keys())].sum(axis=1)
+        df_q['Total_Cumulative'] = df_q['Total_Users'].cumsum()
+        
+        for key in self.product_mapping.keys():
+            df_q[f'{key}_Cumulative'] = df_q[key].cumsum()
         
         return df_q
 
     def generate_outputs(self, df_q, start_year, end_year):
-        """Generates the cumulative product users bar chart."""
+        """Generates individual cumulative product users bar charts."""
         if df_q.empty:
-            return None
+            return None, []
 
-        print("Generating Cumulative Product Users bar chart...")
-        fig, ax = plt.subplots(figsize=(14, 8))
+        print("Generating Cumulative Product Users bar charts...")
+        
+        # --- 1. Generate Overall Aggregate Figure ---
+        fig_agg, ax = plt.subplots(figsize=(14, 8))
 
         x_labels = df_q['Quarter'].astype(str).tolist()
         clean_labels = []
@@ -1498,14 +1510,13 @@ class ProductAnalyzer:
         for lbl in x_labels:
             y, q = lbl[:4], lbl[4:]
             if y != last_year:
-                # Insert a newline between the year and the quarter
                 clean_labels.append(f"{y}\n{q}")
                 last_year = y
             else:
                 clean_labels.append(q)
 
         x = np.arange(len(clean_labels))
-        y_vals = df_q['Cumulative_Users'].values
+        y_vals = df_q['Total_Cumulative'].values
 
         bars = ax.bar(x, y_vals, width=0.45, color='#1b617d', zorder=3)
         ax.plot(
@@ -1522,7 +1533,6 @@ class ProductAnalyzer:
             )
 
         ax.set_xticks(x)
-        # Drop the font size slightly from 16 to 14 to prevent bleeding
         ax.set_xticklabels(clean_labels, fontsize=14, fontweight='bold')
         ax.tick_params(axis='y', labelsize=14)
         ax.get_yaxis().set_major_formatter(
@@ -1545,9 +1555,88 @@ class ProductAnalyzer:
         plt.subplots_adjust(bottom=0.12)
 
         out_path = self.output_dir / "Product_Cumulative_Users_BarChart.png"
-        fig.savefig(out_path, bbox_inches='tight', dpi=300)
+        fig_agg.savefig(out_path, bbox_inches='tight', dpi=300)
+        
+        # --- 2. Generate Individual Figures for Each Product ---
+        fig_individuals = []
+        products = ['DSWx', 'DIST', 'CSLC', 'RTC', 'DISP']
+        
+        for prod in products:
+            prod_cum_col = f'{prod}_Cumulative'
+            
+            if prod_cum_col not in df_q.columns:
+                continue
+                
+            # Filter out preceding zeroes to match presentation aesthetics
+            mask = df_q[prod_cum_col] > 0
+            df_plot = df_q[mask].copy()
+            
+            if df_plot.empty:
+                continue
+                
+            fig_indiv, ax_sub = plt.subplots(figsize=(14, 8))
+            
+            sub_x_labels = df_plot['Quarter'].astype(str).tolist()
+            sub_clean_labels = []
+            sub_last_year = None
+            for lbl in sub_x_labels:
+                y, q = lbl[:4], lbl[4:]
+                if y != sub_last_year:
+                    sub_clean_labels.append(f"{y}\n{q}")
+                    sub_last_year = y
+                else:
+                    sub_clean_labels.append(q)
+                    
+            sub_x = np.arange(len(sub_clean_labels))
+            sub_y_vals = df_plot[prod_cum_col].values
+            
+            sub_bars = ax_sub.bar(
+                sub_x, sub_y_vals, width=0.45, color='#1b617d', zorder=3
+            )
+            ax_sub.plot(
+                sub_x, sub_y_vals, linestyle=':', color='#aaaaaa', 
+                linewidth=2, zorder=2
+            )
+            
+            for bar, val in zip(sub_bars, sub_y_vals):
+                ax_sub.text(
+                    bar.get_x() + bar.get_width() / 2,
+                    bar.get_height() + (max(sub_y_vals) * 0.02),
+                    f"{int(val):,}",
+                    ha='center', va='bottom', fontsize=12, 
+                    fontweight='bold', color='black'
+                )
+                
+            ax_sub.set_xticks(sub_x)
+            ax_sub.set_xticklabels(
+                sub_clean_labels, fontsize=14, fontweight='bold'
+            )
+            
+            ax_sub.grid(
+                axis='y', color='#e0e0e0', linestyle='-', 
+                linewidth=1, zorder=0
+            )
+            ax_sub.tick_params(axis='both', length=0, labelsize=14)
+            ax_sub.get_yaxis().set_major_formatter(
+                plt.FuncFormatter(lambda val, loc: "{:,}".format(int(val)))
+            )
+            
+            for spine in ['top', 'right', 'left', 'bottom']:
+                ax_sub.spines[spine].set_visible(False)
+            
+            plt.figtext(
+                0.5, 0.01, 
+                f"{prod} - Cumulative number of users", 
+                ha="center", fontsize=24, fontweight='bold'
+            )
+            plt.subplots_adjust(bottom=0.12)
+            
+            indiv_out = self.output_dir / f"Product_Cumulative_Users_{prod}_BarChart.png"
+            fig_indiv.savefig(indiv_out, bbox_inches='tight', dpi=300)
+            
+            fig_individuals.append(fig_indiv)
 
-        return fig
+        return fig_agg, fig_individuals
 
 # ==========================================
 # ANALYZER CLASS (AFFILIATION / STAKEHOLDER)
@@ -1605,6 +1694,8 @@ class AffiliationAnalyzer:
                         xls, sheet_name=target_sheet, header=None
                     )
                     
+                    # Strictly isolate the "Number of Users" table 
+                    # to prevent grabbing the Volume/Files tables
                     start_mask = df_raw.apply(
                         lambda row: row.astype(str).str.contains(
                             'User Affiliation by Number of Users', 
@@ -1621,6 +1712,7 @@ class AffiliationAnalyzer:
                         )
                         start_col = col_mask.idxmax()
                         
+                        # Subset the frame entirely to the Users block
                         df_sub = df_raw.iloc[
                             row_idx + 2:, start_col:start_col+12
                         ].copy()
@@ -1648,15 +1740,14 @@ class AffiliationAnalyzer:
                                     }
                                     
                                 for raw_key, clean in self.affiliation_mapping.items():
-                                    # Target index dynamically to prevent Series duplicate bugs
-                                    col_idx = next(
-                                        (i for i, c in enumerate(df_sub.columns) 
+                                    col_match = next(
+                                        (c for c in df_sub.columns 
                                          if raw_key in str(c).upper()), 
                                         None
                                     )
-                                    if col_idx is not None:
+                                    if col_match:
                                         val = pd.to_numeric(
-                                            row.iloc[col_idx], errors='coerce'
+                                            row[col_match], errors='coerce'
                                         )
                                         if not pd.isna(val):
                                             monthly_totals[dt_str][clean] += val
@@ -1673,23 +1764,14 @@ class AffiliationAnalyzer:
                     )
                     date_label = dt.strftime("%Y-%m")
                     
-                    # Dynamically look for the Affiliation/UA sheet in monthly files
-                    xls = pd.ExcelFile(f, engine='openpyxl')
-                    target_sheet = next(
-                        (s for s in xls.sheet_names 
-                         if 'UA' in s.upper() or 'AFFIL' in s.upper()), 
-                        None
-                    )
-                    
-                    if target_sheet is None:
-                        continue
-                        
                     df_raw = pd.read_excel(
-                        xls, sheet_name=target_sheet, header=None
+                        f, sheet_name='Summaries', header=None, 
+                        engine='openpyxl'
                     )
                     header_row = 5
                     headers = df_raw.iloc[header_row].tolist()
                     
+                    # Force Python str() cast to handle empty columns gracefully
                     c_idx = next(
                         (i for i, h in enumerate(headers) 
                          if "Affiliation" in str(h) or "Stakeholder" in str(h)), 
@@ -1733,8 +1815,8 @@ class AffiliationAnalyzer:
                                 for r_key, c_key in self.affiliation_mapping.items():
                                     if r_key in aff_str:
                                         monthly_totals[date_label][c_key] += row['Users']
-            except Exception as e:
-                print(f"Failed to process monthly file {f.name}: {e}")
+            except Exception:
+                pass
 
         # 3. Aggregate & Accumulate by Year
         if not monthly_totals:
@@ -1770,7 +1852,7 @@ class AffiliationAnalyzer:
         print("Generating Cumulative User Affiliation bar chart...")
         
         categories = ['Federal', 'Private sector', 'Academia', 'Non-profit']
-        fig, ax = plt.subplots(figsize=(14, 8))
+        fig, ax = plt.subplots(figsize=(10, 7))
         
         years = df_yearly['Year'].astype(str).tolist()
         x_indices = np.arange(len(years))
@@ -1792,6 +1874,9 @@ class AffiliationAnalyzer:
         for spine in ['top', 'right', 'left', 'bottom']:
             ax.spines[spine].set_visible(False)
             
+        ax.grid(
+            axis='y', color='#e0e0e0', linestyle='-', linewidth=1, zorder=0
+        )
         ax.tick_params(axis='both', length=0, labelsize=14)
         
         ax.set_xticks(x_indices)
@@ -1803,17 +1888,6 @@ class AffiliationAnalyzer:
         
         last_idx = len(years) - 1
         last_x = x_indices[last_idx]
-        
-        # Generate custom bounded gridlines so they don't cross into the legend
-        fig.canvas.draw()
-        y_ticks = ax.get_yticks()
-        max_y = bottom.max()
-        for y in y_ticks:
-            if 0 < y <= max_y + (max_y * 0.1):
-                ax.plot(
-                    [-0.5, last_x + (bar_width / 2)], [y, y], 
-                    color='#e0e0e0', linestyle='-', linewidth=1, zorder=0
-                )
         
         # Custom legend elements mapped to the final right-hand bar
         for cat in categories:
@@ -1839,8 +1913,10 @@ class AffiliationAnalyzer:
                 fontsize=20, fontweight='bold', color=self.colors[cat]
             )
 
+        # Expand x-axis limits dynamically to comfortably fit the legend
         ax.set_xlim(-0.5, len(years) + 1.8)
 
+        # Center the Bottom Title relative to the entire figure
         plt.figtext(
             0.5, 0.01, 
             "Cumulative growth in stakeholder groups across OPERA products",
@@ -1848,6 +1924,7 @@ class AffiliationAnalyzer:
             fontsize=24, fontweight='bold', color='black'
         )
         
+        # Standard layout padding
         plt.subplots_adjust(bottom=0.12)
 
         out_path = self.output_dir / "Affiliation_Cumulative_Users_BarChart.png"

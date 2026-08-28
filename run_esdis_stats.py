@@ -107,9 +107,10 @@ def main():
     product_analyzer = ProductAnalyzer(args.input_dir, args.output_dir)
     df_product = product_analyzer.process_data(args.start_year, args.end_year)
     
-    fig_product = None
+    fig_product_agg = None
+    fig_product_indivs = []
     if not df_product.empty:
-        fig_product = product_analyzer.generate_outputs(
+        fig_product_agg, fig_product_indivs = product_analyzer.generate_outputs(
             df_product, args.start_year, args.end_year
         )
 
@@ -141,11 +142,10 @@ def main():
             df_disc_out.columns = ['Discipline', 'Total Users']
             df_disc_out.to_excel(writer, sheet_name='Discipline_Distribution', index=False)
             
-        # Save Product Distribution
+        # Save Product Distribution (Now correctly tracks individual product columns!)
         if not df_product.empty:
             df_product.to_excel(writer, sheet_name='Product_Distribution', index=False)
 
-        # Save Affiliation Distribution
         if not df_affiliation.empty:
             df_affiliation.to_excel(writer, sheet_name='Affiliation_Distribution', index=False)
             
@@ -156,7 +156,9 @@ def main():
         df_results, args.start_year, args.end_year, 
         summary_fig=fig_summary, 
         discipline_fig=fig_discipline, 
-        product_fig=fig_product # NEW
+        product_fig=fig_product_agg, 
+        product_indiv_figs=fig_product_indivs, # NEW: Passes the 5 individual charts
+        affiliation_fig=fig_affiliation
     )
 
     print("--- Analysis Complete ---")
