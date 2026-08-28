@@ -941,7 +941,11 @@ class ProductAnalyzer:
                 )
                 if start_mask.any():
                     start_idx = start_mask.idxmax()
-                    headers_row = df_raw.iloc[start_idx + 3].values
+                    
+                    # Forward-fill headers so merged columns inherit correctly
+                    h_vals = df_raw.iloc[start_idx + 3].values
+                    headers_row = pd.Series(h_vals).ffill().values
+                    
                     mapped_cols = {}
                     for i, col_name in enumerate(headers_row):
                         if str(col_name).lower() in ['nan', 'nat', 'none']: 
@@ -949,7 +953,9 @@ class ProductAnalyzer:
                         for key, search_val in self.product_mapping.items():
                             s_val = str(search_val).upper()
                             c_val = str(col_name).upper()
-                            if s_val in c_val: 
+                            # Strict regex to prevent partial match overlaps
+                            pat = rf"(?:^|[-_]){s_val}(?:[-_\s\d]|$)"
+                            if re.search(pat, c_val): 
                                 mapped_cols.setdefault(key, []).append(i)
 
                     df_data = df_raw.iloc[start_idx + 6:].copy()
@@ -1000,7 +1006,10 @@ class ProductAnalyzer:
                 for _, row in df_m.iterrows():
                     prod_str = str(row['Category']).upper()
                     for key, search in self.product_mapping.items():
-                        if search.upper() in prod_str:
+                        s_val = str(search).upper()
+                        # Strict regex to prevent partial match overlaps
+                        pat = rf"(?:^|[-_]){s_val}(?:[-_\s\d]|$)"
+                        if re.search(pat, prod_str):
                             monthly_totals[date_label][key] += row['Users']
 
         if not monthly_totals: 
@@ -1011,7 +1020,11 @@ class ProductAnalyzer:
         ).reset_index().rename(columns={'index': 'Date'})
         
         df_time['Date'] = pd.to_datetime(df_time['Date'])
+        
+        # Compute Federal Fiscal Quarter FIRST
         df_time['Quarter'] = df_time['Date'].dt.to_period('Q-SEP')
+        
+        # Filter using the Fiscal Year, NOT the Calendar Year
         df_time = df_time[
             (df_time['Quarter'].dt.qyear >= start_year) & 
             (df_time['Quarter'].dt.qyear <= end_year)
@@ -1114,6 +1127,7 @@ class ProductAnalyzer:
             for spine in ['top', 'right', 'left', 'bottom']: 
                 ax.spines[spine].set_visible(False)
                 
+            # Render title reliably inside PDF bounding box
             ax.text(
                 0.5, -0.18, title, transform=ax.transAxes, 
                 ha="center", va="top", fontsize=24, 
