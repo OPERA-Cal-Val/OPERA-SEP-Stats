@@ -76,6 +76,10 @@ def main():
     print(f"Output: {args.output_dir}")
     print(f"Range: {args.start_year} to {args.end_year}")
 
+    # Create the output directory before running any analytics
+    out_path = Path(args.output_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+
     # 1. Generate Overall Summary Metrics
     summary_analyzer = SummaryMetricsAnalyzer(args.input_dir, args.output_dir)
     fig_summary = summary_analyzer.generate_summary_plots(
@@ -91,8 +95,6 @@ def main():
         sys.exit(0)
 
     # 3. Save Main Spreadsheet
-    out_path = Path(args.output_dir)
-    out_path.mkdir(parents=True, exist_ok=True)
     excel_path = out_path / "OPERA_User_Distribution_Summary_Updated.xlsx"
     df_results.to_excel(excel_path)
     print(f"Spreadsheet saved: {excel_path}")
